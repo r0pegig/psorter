@@ -1,13 +1,19 @@
 #!/usr/bin/env python
 
-# - make dialog resizable to any size
-# - init dialog size to correct value
-# - sorter:
-#   - create config syntax
-#   - implement outer sorting nlog(n) sorting algo
-#   - add 'corrupt' property to algo
+# + make dialog resizable to any size
+# + init dialog size to correct value
+# + sorter:
+#   + create config syntax
+#   + implement outer sorting nlog(n) sorting algo
+#   + add 'corrupt' property to algo
 #
-# - sorter - curr files
+# + make Model functions for correct 'files' array (array of dicts: 'name', 'spoilt', 'created')
+# + make ViewController
+# - make result writer to file - filename 'ps-result-USER.json'
+# {"user":"STR","groups":[]}
+# }
+# - make main logic of application
+# + make result writer function (out.json)
 
 import sys
 import random
@@ -19,6 +25,25 @@ from PIL import Image
 import PIL.ExifTags
 from PyQt4 import QtGui, QtCore
 from PyQt4.QtCore import Qt
+import sets
+
+# "prefix": "d:\photo"
+# "dirs": ["", "", ""]
+# path = dir + filename
+
+#   {
+#       "user": "USER",
+#       "groups": [{
+#           "name": "GROUP1",
+#           "files": [{"path": "dir+filename", "created": 12345, "spoilt": true},{...}]
+#       }, {
+#           "name": GROUP2",
+#           "files": [{}, {}]
+#       }]
+
+def write_result(filename, user, groups):
+    with open(filename, 'w') as f:
+        json.dump({'user': user, 'groups': groups}, f)
 
 class MergeSorter:
     def __init__(self, array):
@@ -67,42 +92,212 @@ class MergeSorter:
 # - signal - images_changed()
 # - group() - get group of photos - name, start, end
 
-# takes array and map - state
 class MergeSorter:
-    def start(self, array):
-        self.items = (i1, i2)
-        return self.items
-    def next(self, array):
-        self.items = (i1, i2)
-        return self.items
-    def restore(self, array, state):
-        pass
-    def store(self):
-        return state
 
-# takes groups info
-# - self.pixmaps() - tuple
-# - self.items() - groups
-# [
-#    {"name":"a","files":[]}, ...
-# ]
-# - 
-class ImagesSorterModel:
-    images_changed = QtCore.pyqtSignal()
-    images_status_changed = QtCore.pyqtSignal()
-    def __init__(self, sorter_class):
-        pass
-    def start(self, groups):
-        pass
+    def set_params(self, array):
+        self.array = array
+
+    def start(self):
+
+        if len(self.array) < 2:
+            self.items = (None, None)
+            return self.items
+        self.pos = [0, 1]
+        self.i = [0, 0]
+        self.n = [1, 1]
+        self.result = []
+        self.items = (self.array[0], self.array[1])
+        return self.items
+
+    def next(self, _0_is_greater):
+
+        g = 1
+        if _0_is_greater:
+            g = 0
+        l = 1 - g
+        self.result.append(self.array[self.pos[l] + self.i[l]])
+        self.i[l] = self.i[l] + 1
+        if self.i[l] == self.n[l]:
+            self.result = self.result + self.array[self.pos[g] + self.i[g]:self.pos[g] + self.n[g]]
+            self.array[:] = self.array[:self.pos[0]] + self.result + self.array[self.pos[1] + self.n[1]:]
+            self.result = []
+            if self.move_to_next_subarray():
+                self.items = (None, None)
+                return self.items
+        self.items = (self.array[self.pos[0] + self.i[0]], self.array[self.pos[1] + self.i[1]])
+        return self.items
+
+    def move_to_next_subarray(self):
+
+        self.pos[0] = self.pos[1] + self.n[1]
+        if self.pos[0] + self.n[0] >= len(self.array):
+            self.pos[0] = 0
+            self.n[0] = self.n[0] * 2
+            if self.n[0] >= len(self.array):
+                return True
+        self.pos[1] = self.pos[0] + self.n[0]
+        self.n[1] = min(self.n[0], len(self.array) - self.pos[1])
+        self.i[0] = 0
+        self.i[1] = 0
+        return False
+
+    def restore_state(self, array, state):
+
+        self.array = array
+        self.pos = state['pos']
+        self.i = state['i']
+        self.n = state['n']
+        self.result = state['result']
+        self.items = state['items']
+
+    def store_state(self):
+
+        return {'pos': self.pos, 'i': self.i, 'n': self.n,
+                'result': self.result, 'items': self.items}
+
+# GROUPS ::= [GROUP*]
+# GROUP = {"name":"STR","files":[FILE*]}
+# FILE = {"name":"STR","created":NUM,"spoilt":bool}
+class ImagesSorterModel(QtCore.QObject):
+
+    files_changed = QtCore.pyqtSignal()
+    group_changed = QtCore.pyqtSignal()
+    spoilt_changed = QtCore.pyqtSignal()
+    finished = QtCore.pyqtSignal()
+
+    def set_params(self, groups, sorter, obj):
+
+        self.groups = groups
+        self.sorter = sorter
+        self.obj = obj
+
+    def start(self):
+
+        self.i = 0
+        self.sorter.set_params(self.groups[self.i]['files'])
+        self.sorter.start()
+        self.group_changed.emit()
+        self.files_changed.emit()
+
+    def change_group(self):
+
+        self.i = self.i + 1
+        if self.i == len(self.groups):
+            self.done.emit()
+            self.obj.callback()
+            return
+        self.sorter.set_params(self.groups[self.i]['files'])
+        self.sorter.start()
+        self.group_changed.emit()
+        self.files_changed.emit()
+
+    def mark_better(self, _0_is_better):
+
+        print "0 is better: %d" % int(_0_is_better)
+        files = self.sorter.items
+        if files[0].get('spoilt', False) or files[0].get('spoilt', False):
+            _0_is_better = files[1].get('spoilt', False)
+        while True:
+            files = self.sorter.next(_0_is_better)
+            if files[0] is None:
+                self.change_group()
+                return
+            if not files[0].get('spoilt', False) and not files[0].get('spoilt', False):
+                break
+            _0_is_better = not files[0].get('spoilt', False)
+            print "another turn"
+        self.files_changed.emit()
+
+    def files(self):
+        return self.sorter.items
+
+    def mark_spoilt(self, n):
+
+        print "%d marked spoilt" % n
+        file_ = self.sorter.items[n]
+        if file_.get('spoilt', False):
+            return
+        file_['spoilt'] = True
+        self.spoilt_changed.emit()
+        if self.sorter.items[1 - n].get('spoilt', False):
+            self.mark_better(0)
+
     def store_state(self):
         pass
-    def group(self):
+
+    def restore_state(self, groups, sorter, obj, state):
         pass
 
 class ImagesSorterViewController(QtGui.QWidget):
-    def __init__(self, model):
-        pass
-    def 
+
+    def __init__(self):
+
+        super(ImagesSorterViewController, self).__init__()
+        self.create_child_widgets()
+
+    def create_child_widgets(self):
+        help_text = QtGui.QLabel("""Loooooooooooong help""")
+        policy = QtGui.QSizePolicy(QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Maximum)
+        help_text.setSizePolicy(policy)
+        self.left_image = ImageLabel(True)
+        self.right_image = ImageLabel(False)
+        self.left_spoilt = QtGui.QPushButton("Is Spoilt")
+        self.right_spoilt = QtGui.QPushButton("Is Spoilt")
+        layout = QtGui.QGridLayout()
+        layout.addWidget(help_text, 0, 0, 1, 0)
+        layout.addWidget(self.left_image, 1, 0)
+        layout.addWidget(self.right_image, 1, 1)
+        layout.addWidget(self.left_spoilt, 2, 0)
+        layout.addWidget(self.right_spoilt, 2, 1)
+        self.setLayout(layout)
+        self.left_image.clicked.connect(self.mark_better)
+        self.right_image.clicked.connect(self.mark_better)
+        self.left_spoilt.clicked.connect(self.mark_left_spoilt)
+        self.right_spoilt.clicked.connect(self.mark_right_spoilt)
+
+        # set initial size
+        rect = QtGui.QDesktopWidget().availableGeometry()
+        self.resize(rect.size() / 4)
+
+    def set_params(self, model):
+
+        self.model = model
+        files = self.model.files()
+        self.left_image.load(files[0]['name'])
+        self.right_image.load(files[1]['name'])
+        self.model.files_changed.connect(self.update_images)
+        self.model.spoilt_changed.connect(self.update_spoilt)
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def mark_left_spoilt(self):
+        self.model.mark_spoilt(0)
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def mark_right_spoilt(self):
+        self.model.mark_spoilt(1)
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def mark_better(self, left):
+        self.model.mark_better(left)
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def update_images(self):
+        files = self.model.files()
+        self.left_image.load(files[0]['name'])
+        self.right_image.load(files[1]['name'])
+        self.left_spoilt.setEnabled(True)
+        self.right_spoilt.setEnabled(True)
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def update_spoilt(self):
+        files = self.model.files()
+        self.left_spoilt.setEnabled(not files[0].get('spoilt', False))
+        self.right_spoilt.setEnabled(not files[1].get('spoilt', False))
+
+    @QtCore.pyqtSlot(int, QtGui.QWidget)
+    def finish(self):
+        pass 
+
 
 class FilesSorter:
 
@@ -274,7 +469,7 @@ def test_sorter(klass):
 
 def load_config():
     try:
-        fp = open('prank.conf', 'r')
+        fp = open('test.json', 'r')
         config = json.load(fp)
         fp.close()
     except IOError:
@@ -336,12 +531,24 @@ def make_html(name, files):
 
 array = construct_files_array()
 groups = group_files_array(array)
-test_sorter(MergeSorter)
 
-sorter = FilesSorter(MergeSorter, groups[0]['files'])
 app = QtGui.QApplication(sys.argv)
+sorter = MergeSorter()
+model = ImagesSorterModel()
+model.set_params(groups, sorter, None)
+model.start()
+view = ImagesSorterViewController()
+view.set_params(model)
+view.show()
+#app.exec_()
 
-cd = ImagesComparator(sorter)
-cd.show()
-app.exec_()
+
+#test_sorter(MergeSorter)
+
+#sorter = FilesSorter(MergeSorter, groups[0]['files'])
+#app = QtGui.QApplication(sys.argv)
+
+#cd = ImagesComparator(sorter)
+#cd.show()
+#app.exec_()
 
